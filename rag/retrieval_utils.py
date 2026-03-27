@@ -58,8 +58,8 @@ class RetrievedItem:
             "chunk_index": metadata.get("chunk_index"),
             "chunk_count": metadata.get("chunk_count"),
             "raw_rank": self.raw_rank,
-            "raw_score": self.raw_score,
-            "rerank_score": self.rerank_score,
+            "raw_score": float(self.raw_score) if self.raw_score is not None else None,
+            "rerank_score": float(self.rerank_score) if self.rerank_score is not None else None,
             "page_content": self.doc.page_content,
         }
 

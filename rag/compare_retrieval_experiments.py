@@ -48,7 +48,7 @@ def run_setting(
             queries,
             top_k,
             progress_desc=experiment_name,
-            progress_stage="retrieval" if not enable_rerank else "retrieval+rereank",
+            progress_stage="retrieval" if not enable_rerank else "retrieval+rerank",
         )
         return {
             "config": {
