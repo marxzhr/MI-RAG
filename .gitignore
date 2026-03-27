@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Environments
+.venv/
+.env
+rag/.env
+
+# IDE
+.vscode/
+
+# Local sibling repos
+Chinese-Text-Classification-Pytorch/
+cMedQA2/
+
+# Model artifacts
+models/
+
+# Vector stores and generated indexes
+rag/vector_store/**
+!rag/vector_store/
+!rag/vector_store/.gitkeep
+
+# Local datasets / caches
+data/hf_cache/
+*.lock
+*.arrow
+
+# Large generated data files
+rag/data/cmedqa2_answers.jsonl
+rag/data/eval_results*.json
+rag/data/error_analysis*.json
+rag/data/retrieval_experiment_compare.json
+rag/kb_docs.jsonl
+rag/data/kb_docs.jsonl
