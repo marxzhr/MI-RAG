@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from embedding_utils import create_embeddings, embedding_provider, inspect_local_embedding_model
 from retrieval_utils import retrieval_fetch_k, retrieve_documents
+from intent_utils import infer_intent_and_rewrite
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -54,6 +55,8 @@ def evaluate(
     max_k: int,
     progress_desc: str | None = None,
     progress_stage: str = "retrieval",
+    enable_intent: bool = False,
+    batch_size: int = 32,
 ) -> tuple[dict, list[dict]]:
     total = len(queries)
     hits_1 = 0.0
@@ -62,6 +65,10 @@ def evaluate(
     mrr = 0.0
     details = []
     fetch_k = retrieval_fetch_k(max_k)
+    batch_size = max(1, batch_size)
+    embedder = getattr(vectorstore, "embedding_function", None)
+    if embedder is None:
+        raise RuntimeError("vectorstore 缺少 embedding_function，无法批量嵌入查询。")
 
     progress_label = progress_desc or "Evaluating"
     iterator = tqdm(
@@ -72,32 +79,65 @@ def evaluate(
         dynamic_ncols=True,
     )
 
-    for row in iterator:
-        docs, retrieval_meta = retrieve_documents(vectorstore, row["query"], top_k=max_k, fetch_k=fetch_k)
-        pred_ids = [doc.doc.metadata.get("doc_id", "") for doc in docs]
-        gold_ids = set(row["gold_doc_ids"])
-        raw_pred_ids = [item.get("doc_id", "") for item in retrieval_meta["raw_items"]]
-        gold_in_fetch_pool = any(doc_id in gold_ids for doc_id in raw_pred_ids)
+    for start in range(0, total, batch_size):
+        batch_rows = queries[start : start + batch_size]
 
-        hits_1 += hit_at_k(pred_ids, gold_ids, 1)
-        hits_3 += hit_at_k(pred_ids, gold_ids, min(3, max_k))
-        hits_5 += hit_at_k(pred_ids, gold_ids, min(5, max_k))
-        mrr += reciprocal_rank(pred_ids, gold_ids)
+        batch_queries = []
+        intents = []
+        for row in batch_rows:
+            original_query = row["query"]
+            if enable_intent:
+                intent_result = infer_intent_and_rewrite(original_query)
+                query_for_retrieval = intent_result.rewritten_query
+                intent_label = intent_result.label
+            else:
+                intent_result = None
+                query_for_retrieval = original_query
+                intent_label = None
+            batch_queries.append(query_for_retrieval)
+            intents.append((intent_result, intent_label))
 
-        details.append(
-            {
-                "query_id": row["query_id"],
-                "query": row["query"],
-                "gold_doc_ids": row["gold_doc_ids"],
-                "pred_doc_ids": pred_ids,
-                "gold_in_fetch_pool": gold_in_fetch_pool,
-                "hit@1": hit_at_k(pred_ids, gold_ids, 1),
-                "hit@3": hit_at_k(pred_ids, gold_ids, min(3, max_k)),
-                "hit@5": hit_at_k(pred_ids, gold_ids, min(5, max_k)),
-                "rr": reciprocal_rank(pred_ids, gold_ids),
-                "retrieval": retrieval_meta,
-            }
-        )
+        # 批量向量化
+        query_embeddings = embedder.embed_documents(batch_queries)
+
+        for row, (intent_result, intent_label), query_vec, rewritten_query in zip(
+            batch_rows, intents, query_embeddings, batch_queries
+        ):
+            docs, retrieval_meta = retrieve_documents(
+                vectorstore,
+                rewritten_query,
+                top_k=max_k,
+                fetch_k=fetch_k,
+                query_embedding=query_vec,
+            )
+            pred_ids = [doc.doc.metadata.get("doc_id", "") for doc in docs]
+            gold_ids = set(row["gold_doc_ids"])
+            raw_pred_ids = [item.get("doc_id", "") for item in retrieval_meta["raw_items"]]
+            gold_in_fetch_pool = any(doc_id in gold_ids for doc_id in raw_pred_ids)
+
+            hits_1 += hit_at_k(pred_ids, gold_ids, 1)
+            hits_3 += hit_at_k(pred_ids, gold_ids, min(3, max_k))
+            hits_5 += hit_at_k(pred_ids, gold_ids, min(5, max_k))
+            mrr += reciprocal_rank(pred_ids, gold_ids)
+
+            details.append(
+                {
+                    "query_id": row["query_id"],
+                    "query": row["query"],
+                    "rewritten_query": rewritten_query if enable_intent else row["query"],
+                    "intent": intent_label,
+                    "gold_doc_ids": row["gold_doc_ids"],
+                    "pred_doc_ids": pred_ids,
+                    "gold_in_fetch_pool": gold_in_fetch_pool,
+                    "hit@1": hit_at_k(pred_ids, gold_ids, 1),
+                    "hit@3": hit_at_k(pred_ids, gold_ids, min(3, max_k)),
+                    "hit@5": hit_at_k(pred_ids, gold_ids, min(5, max_k)),
+                    "rr": reciprocal_rank(pred_ids, gold_ids),
+                    "retrieval": retrieval_meta,
+                }
+            )
+
+        iterator.update(len(batch_rows))
         iterator.set_postfix(
             stage=progress_stage,
             processed=f"{len(details)}/{total}",
@@ -167,6 +207,18 @@ def main() -> None:
         default=None,
         help="reranker 模型路径或 repo id",
     )
+    parser.add_argument(
+        "--enable-intent",
+        choices=["0", "1"],
+        default="0",
+        help="是否启用意图分类与改写：1 开启，0 关闭",
+    )
+    parser.add_argument(
+        "--eval-batch-size",
+        type=int,
+        default=int(os.getenv("EVAL_QUERY_BATCH", "32")),
+        help="评测时 query 批量嵌入的 batch_size，默认 32，可用环境变量 EVAL_QUERY_BATCH 覆盖",
+    )
     args = parser.parse_args()
 
     vector_store_dir = Path(args.vector_store_dir)
@@ -196,6 +248,8 @@ def main() -> None:
         args.top_k,
         progress_desc="eval_baseline",
         progress_stage="retrieval",
+        enable_intent=args.enable_intent == "1",
+        batch_size=args.eval_batch_size,
     )
     diagnostics = None
     if embedding_provider() == "local_bge":

@@ -17,6 +17,7 @@ from embedding_utils import (
 )
 from prompt_template import RAG_SYSTEM_PROMPT, RAG_USER_TEMPLATE
 from retrieval_utils import retrieve_documents
+from intent_utils import infer_intent_and_rewrite
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -41,10 +42,18 @@ def build_context(context_docs: list) -> str:
     )
 
 
-def answer_question(query: str, top_k: int, vector_store_dir: Path) -> None:
+def answer_question(
+    query_original: str,
+    query_for_retrieval: str,
+    top_k: int,
+    vector_store_dir: Path,
+    intent_result=None,
+) -> None:
     try:
         vectorstore = load_vectorstore(vector_store_dir)
-        context_docs, retrieval_meta = retrieve_documents(vectorstore, query, top_k=top_k)
+        context_docs, retrieval_meta = retrieve_documents(
+            vectorstore, query_for_retrieval, top_k=top_k
+        )
         context = build_context(context_docs)
 
         prompt = ChatPromptTemplate.from_messages(
@@ -55,14 +64,17 @@ def answer_question(query: str, top_k: int, vector_store_dir: Path) -> None:
             temperature=0,
             **openai_kwargs(),
         )
-        answer = (prompt | llm).invoke({"query": query, "context": context})
+        answer = (prompt | llm).invoke({"query": query_original, "context": context})
     except APIConnectionError as exc:
         raise RuntimeError(
             "调用模型接口失败，请检查网络、代理和 OPENAI_BASE_URL 配置。"
         ) from exc
 
     print("=" * 60)
-    print("问题:", query)
+    print("问题:", query_original)
+    if intent_result:
+        print(f"意图: {intent_result.label}")
+        print(f"检索用 query: {query_for_retrieval}")
     if embedding_provider() == "local_bge":
         diagnostics = inspect_local_embedding_model()
         print(f"Local Embedding Path: {diagnostics['resolved_path']}")
@@ -118,6 +130,12 @@ def main() -> None:
         default=str(DEFAULT_VECTOR_STORE_DIR),
         help="FAISS 索引目录",
     )
+    parser.add_argument(
+        "--enable-intent",
+        choices=["0", "1"],
+        default="0",
+        help="是否启用意图分类与改写：1 开启，0 关闭",
+    )
     args = parser.parse_args()
     vector_store_dir = Path(args.vector_store_dir)
     if args.fetch_k is not None:
@@ -136,7 +154,26 @@ def main() -> None:
             f"向量索引不存在: {vector_store_dir}，请先运行 build_index.py"
         )
 
-    answer_question(args.query, args.top_k, vector_store_dir)
+    query = args.query
+    if args.enable_intent == "1":
+        intent_result = infer_intent_and_rewrite(query)
+        rewritten = intent_result.rewritten_query
+        intent_label = intent_result.label
+        print(f"[Intent] {intent_label}")
+        if rewritten != query:
+            print(f"[Rewrite] {rewritten}")
+        query_to_use = rewritten
+    else:
+        intent_result = None
+        query_to_use = query
+
+    answer_question(
+        query_original=query,
+        query_for_retrieval=query_to_use,
+        top_k=args.top_k,
+        vector_store_dir=vector_store_dir,
+        intent_result=intent_result,
+    )
 
 
 if __name__ == "__main__":

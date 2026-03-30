@@ -117,9 +117,21 @@ def retrieve_documents(
     fetch_k: int | None = None,
     use_rerank: bool | None = None,
     use_dedup: bool | None = None,
+    query_embedding: list[float] | None = None,
 ) -> tuple[list[RetrievedItem], dict]:
     fetch_k = fetch_k or retrieval_fetch_k(top_k)
-    raw_pairs = vectorstore.similarity_search_with_score(query, k=fetch_k)
+    if query_embedding is not None:
+        if hasattr(vectorstore, "similarity_search_by_vector_with_relevance_scores"):
+            raw_pairs = vectorstore.similarity_search_by_vector_with_relevance_scores(
+                query_embedding, k=fetch_k
+            )
+        elif hasattr(vectorstore, "similarity_search_by_vector"):
+            docs_only = vectorstore.similarity_search_by_vector(query_embedding, k=fetch_k)
+            raw_pairs = [(doc, None) for doc in docs_only]
+        else:
+            raw_pairs = vectorstore.similarity_search_with_score(query, k=fetch_k)
+    else:
+        raw_pairs = vectorstore.similarity_search_with_score(query, k=fetch_k)
     raw_items = [
         RetrievedItem(doc=doc, raw_rank=idx, raw_score=score)
         for idx, (doc, score) in enumerate(raw_pairs, 1)
