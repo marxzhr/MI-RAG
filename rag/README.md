@@ -99,13 +99,19 @@ python rag\build_index.py --data-path rag\data\cmedqa2_answers.jsonl --vector-st
 ## 问答
 
 ```bash
-python rag\run_baseline_rag.py --query "糖尿病怎么治疗？" --top-k 3
+python rag\run_baseline_rag.py --vector-store-dir rag\vector_store\cmedqa2_full --query "糖尿病怎么治疗？" --top-k 3
 ```
 
 可选开启 rerank：
 
 ```bash
-python rag\run_baseline_rag.py --query "糖尿病怎么治疗？" --top-k 5 --fetch-k 20 --enable-dedup 1 --enable-rerank 1 --rerank-model BAAI/bge-reranker-base
+python rag\run_baseline_rag.py --vector-store-dir rag\vector_store\cmedqa2_full --query "糖尿病怎么治疗？" --top-k 5 --fetch-k 20 --enable-dedup 1 --enable-rerank 1 --rerank-model BAAI/bge-reranker-base
+```
+
+按文档建议启用“实体提取 + 多路 Query Rewrite”：
+
+```bash
+python rag\run_baseline_rag.py --vector-store-dir rag\vector_store\cmedqa2_full --query "我最近老是头晕是不是贫血啊怎么办" --top-k 5 --enable-query-understanding 1 --rewrite-count 3
 ```
 
 默认检索会先召回 `top20`，再做两层去重：
@@ -128,8 +134,19 @@ python rag\prepare_cmedqa2.py
 ## 评测 baseline
 
 ```bash
-python rag\eval_baseline_rag.py --vector-store-dir rag\vector_store\cmedqa2 --eval-path rag\data\cmedqa2_dev_queries.jsonl --top-k 5
+python rag\eval_baseline_rag.py --vector-store-dir rag\vector_store\cmedqa2_full --eval-path rag\data\cmedqa2_dev_queries.jsonl --top-k 5
 ```
+
+评测 `Baseline vs Baseline + Entity + Multi-query Rewrite`：
+
+```bash
+python rag\eval_baseline_rag.py --vector-store-dir rag\vector_store\cmedqa2_full --eval-path rag\data\cmedqa2_dev_queries.jsonl --top-k 5 --output-path rag\data\eval_no_rewrite.json
+python rag\eval_baseline_rag.py --vector-store-dir rag\vector_store\cmedqa2_full --eval-path rag\data\cmedqa2_dev_queries.jsonl --top-k 5 --enable-query-understanding 1 --rewrite-count 3 --output-path rag\data\eval_with_multi_query.json
+```
+
+查询理解结果默认会缓存在：
+
+- `rag/data/query_understanding_cache.json`
 
 评测结果现在会额外保存：
 
@@ -155,3 +172,39 @@ python rag\compare_retrieval_experiments.py --vector-store-dir rag\vector_store\
 - baseline：无去重，无 rerank
 - dedup：仅去重
 - dedup_rerank：去重 + rerank
+
+## 训练意图分类小模型
+
+使用 `KUAKE-QIC` 训练 `ERNIE-Health` 文本分类器：
+
+```bash
+python rag\train_intent_classifier.py
+```
+
+如果显存较小，可以减小 batch size：
+
+```bash
+python rag\train_intent_classifier.py --batch-size 8 --eval-batch-size 16
+```
+
+当前默认推荐参数：
+
+- `model_name=nghuyong/ernie-health-zh`
+- `max_length=96`
+- `epochs=5`
+- `learning_rate=3e-5`
+- `batch_size=16`
+- `eval_batch_size=32`
+- `warmup_ratio=0.06`
+
+高显存版本示例：
+
+```bash
+python rag\train_intent_classifier.py --batch-size 16 --eval-batch-size 32 --max-length 96 --epochs 5 --learning-rate 3e-5
+```
+
+低显存版本示例：
+
+```bash
+python rag\train_intent_classifier.py --batch-size 8 --eval-batch-size 16 --gradient-accumulation-steps 2 --max-length 96 --epochs 5 --learning-rate 3e-5
+```

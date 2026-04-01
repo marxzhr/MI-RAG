@@ -9,15 +9,29 @@ from langchain_community.vectorstores import FAISS
 from tqdm import tqdm
 
 from embedding_utils import create_embeddings, embedding_provider, inspect_local_embedding_model
-from retrieval_utils import retrieval_fetch_k, retrieve_documents
+from retrieval_utils import retrieval_fetch_k, retrieve_documents, retrieve_documents_multi_query
 from intent_utils import infer_intent_and_rewrite
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_VECTOR_STORE_DIR = BASE_DIR / "vector_store"
 DEFAULT_EVAL_PATH = BASE_DIR / "data" / "cmedqa2_dev_queries.jsonl"
 
 load_dotenv(BASE_DIR / ".env")
+
+
+def resolve_default_vector_store_dir() -> Path:
+    candidates = [
+        BASE_DIR / "vector_store" / "cmedqa2_full",
+        BASE_DIR / "vector_store" / "cmedqa2",
+        BASE_DIR / "vector_store",
+    ]
+    for candidate in candidates:
+        if (candidate / "index.faiss").exists() and (candidate / "index.pkl").exists():
+            return candidate
+    return BASE_DIR / "vector_store"
+
+
+DEFAULT_VECTOR_STORE_DIR = resolve_default_vector_store_dir()
 
 
 def load_vectorstore(vector_store_dir: Path) -> FAISS:
@@ -55,7 +69,7 @@ def evaluate(
     max_k: int,
     progress_desc: str | None = None,
     progress_stage: str = "retrieval",
-    enable_intent: bool = False,
+    enable_query_understanding: bool = False,
     batch_size: int = 32,
 ) -> tuple[dict, list[dict]]:
     total = len(queries)
@@ -82,34 +96,52 @@ def evaluate(
     for start in range(0, total, batch_size):
         batch_rows = queries[start : start + batch_size]
 
-        batch_queries = []
+        retrieval_queries_batch = []
         intents = []
         for row in batch_rows:
             original_query = row["query"]
-            if enable_intent:
+            if enable_query_understanding:
                 intent_result = infer_intent_and_rewrite(original_query)
-                query_for_retrieval = intent_result.rewritten_query
+                retrieval_queries = intent_result.rewrite_queries or [intent_result.rewritten_query]
                 intent_label = intent_result.label
             else:
                 intent_result = None
-                query_for_retrieval = original_query
+                retrieval_queries = [original_query]
                 intent_label = None
-            batch_queries.append(query_for_retrieval)
+            retrieval_queries_batch.append(retrieval_queries)
             intents.append((intent_result, intent_label))
 
-        # 批量向量化
-        query_embeddings = embedder.embed_documents(batch_queries)
+        flat_queries = []
+        flat_query_row_index = []
+        for row_idx, queries_for_row in enumerate(retrieval_queries_batch):
+            for query in queries_for_row:
+                flat_queries.append(query)
+                flat_query_row_index.append(row_idx)
 
-        for row, (intent_result, intent_label), query_vec, rewritten_query in zip(
-            batch_rows, intents, query_embeddings, batch_queries
+        query_embeddings = embedder.embed_documents(flat_queries)
+        embeddings_by_row = [[] for _ in batch_rows]
+        for row_idx, query_embedding in zip(flat_query_row_index, query_embeddings):
+            embeddings_by_row[row_idx].append(query_embedding)
+
+        for row, (intent_result, intent_label), rewritten_queries, query_vecs in zip(
+            batch_rows, intents, retrieval_queries_batch, embeddings_by_row
         ):
-            docs, retrieval_meta = retrieve_documents(
-                vectorstore,
-                rewritten_query,
-                top_k=max_k,
-                fetch_k=fetch_k,
-                query_embedding=query_vec,
-            )
+            if len(rewritten_queries) > 1:
+                docs, retrieval_meta = retrieve_documents_multi_query(
+                    vectorstore,
+                    rewritten_queries,
+                    top_k=max_k,
+                    fetch_k=fetch_k,
+                    query_embeddings=query_vecs,
+                )
+            else:
+                docs, retrieval_meta = retrieve_documents(
+                    vectorstore,
+                    rewritten_queries[0],
+                    top_k=max_k,
+                    fetch_k=fetch_k,
+                    query_embedding=query_vecs[0],
+                )
             pred_ids = [doc.doc.metadata.get("doc_id", "") for doc in docs]
             gold_ids = set(row["gold_doc_ids"])
             raw_pred_ids = [item.get("doc_id", "") for item in retrieval_meta["raw_items"]]
@@ -124,8 +156,10 @@ def evaluate(
                 {
                     "query_id": row["query_id"],
                     "query": row["query"],
-                    "rewritten_query": rewritten_query if enable_intent else row["query"],
+                    "rewritten_query": rewritten_queries[0] if enable_query_understanding else row["query"],
+                    "rewrite_queries": rewritten_queries,
                     "intent": intent_label,
+                    "entities": intent_result.entities if intent_result else {},
                     "gold_doc_ids": row["gold_doc_ids"],
                     "pred_doc_ids": pred_ids,
                     "gold_in_fetch_pool": gold_in_fetch_pool,
@@ -208,10 +242,27 @@ def main() -> None:
         help="reranker 模型路径或 repo id",
     )
     parser.add_argument(
-        "--enable-intent",
+        "--enable-query-understanding",
         choices=["0", "1"],
         default="0",
-        help="是否启用意图分类与改写：1 开启，0 关闭",
+        help="是否启用 实体提取+多路 Query Rewrite：1 开启，0 关闭",
+    )
+    parser.add_argument(
+        "--query-rewrite-model",
+        default=None,
+        help="查询理解使用的模型名，默认跟随 OPENAI_MODEL",
+    )
+    parser.add_argument(
+        "--rewrite-count",
+        type=int,
+        default=None,
+        help="生成多路 rewrite 的条数，默认读取 QUERY_REWRITE_COUNT 或 3",
+    )
+    parser.add_argument(
+        "--enable-intent",
+        choices=["0", "1"],
+        default=None,
+        help="兼容旧参数，等价于 --enable-query-understanding",
     )
     parser.add_argument(
         "--eval-batch-size",
@@ -232,6 +283,13 @@ def main() -> None:
         os.environ["ENABLE_RERANK"] = args.enable_rerank
     if args.rerank_model is not None:
         os.environ["RERANK_MODEL"] = args.rerank_model
+    if args.query_rewrite_model is not None:
+        os.environ["QUERY_REWRITE_MODEL"] = args.query_rewrite_model
+    if args.rewrite_count is not None:
+        os.environ["QUERY_REWRITE_COUNT"] = str(args.rewrite_count)
+    if args.enable_intent is not None:
+        args.enable_query_understanding = args.enable_intent
+    os.environ["ENABLE_QUERY_UNDERSTANDING"] = args.enable_query_understanding
 
     if embedding_provider() == "openai" and not os.getenv("OPENAI_API_KEY"):
         raise EnvironmentError("缺少 OPENAI_API_KEY 环境变量。")
@@ -248,7 +306,7 @@ def main() -> None:
         args.top_k,
         progress_desc="eval_baseline",
         progress_stage="retrieval",
-        enable_intent=args.enable_intent == "1",
+        enable_query_understanding=args.enable_query_understanding == "1",
         batch_size=args.eval_batch_size,
     )
     diagnostics = None

@@ -14,7 +14,7 @@ from embedding_utils import create_embeddings, embedding_provider
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA_PATH = BASE_DIR / "data" / "kb_docs.jsonl"
+DEFAULT_DATA_PATH = BASE_DIR / "data" / "data/cmedqa2_answer.jsonl"
 DEFAULT_VECTOR_STORE_DIR = BASE_DIR / "vector_store"
 
 load_dotenv(BASE_DIR / ".env")

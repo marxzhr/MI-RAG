@@ -1,21 +1,32 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Environments
 .venv/
 .env
 rag/.env
+.env.*
+!.env.example
 
 # IDE
 .vscode/
+.idea/
 
 # Local sibling repos
 Chinese-Text-Classification-Pytorch/
 cMedQA2/
+KUAKE-QIC/
 
 # Model artifacts
 models/
+rag/models/
+checkpoints/
 
 # Vector stores and generated indexes
 rag/vector_store/**
@@ -24,13 +35,37 @@ rag/vector_store/**
 
 # Local datasets / caches
 data/hf_cache/
+data/
+!data/.gitkeep
 *.lock
 *.arrow
+*.cache
+
+# Logs and runtime outputs
+*.log
+logs/
+tmp/
+temp/
 
 # Large generated data files
 rag/data/cmedqa2_answers.jsonl
-rag/data/eval_results*.json
-rag/data/error_analysis*.json
+rag/data/eval*.json
+rag/data/*analysis*.json
 rag/data/retrieval_experiment_compare.json
 rag/kb_docs.jsonl
 rag/data/kb_docs.jsonl
+rag/data/_smoke_eval.jsonl
+rag/data/_smoke_eval_results.json
+rag/data/query_understanding_cache.json
+rag/data/query_rewrite_cache.json
+
+# Archives for server transfer
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# OS files
+.DS_Store
+Thumbs.db

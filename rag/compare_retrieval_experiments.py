@@ -11,11 +11,25 @@ from eval_baseline_rag import evaluate, load_eval_queries, load_vectorstore
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_VECTOR_STORE_DIR = BASE_DIR / "vector_store"
 DEFAULT_EVAL_PATH = BASE_DIR / "data" / "cmedqa2_dev_queries.jsonl"
 DEFAULT_OUTPUT_PATH = BASE_DIR / "data" / "retrieval_experiment_compare.json"
 
 load_dotenv(BASE_DIR / ".env")
+
+
+def resolve_default_vector_store_dir() -> Path:
+    candidates = [
+        BASE_DIR / "vector_store" / "cmedqa2_full",
+        BASE_DIR / "vector_store" / "cmedqa2",
+        BASE_DIR / "vector_store",
+    ]
+    for candidate in candidates:
+        if (candidate / "index.faiss").exists() and (candidate / "index.pkl").exists():
+            return candidate
+    return BASE_DIR / "vector_store"
+
+
+DEFAULT_VECTOR_STORE_DIR = resolve_default_vector_store_dir()
 
 
 def run_setting(
